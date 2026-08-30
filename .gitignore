@@ -1,0 +1,10 @@
+# The fetched records stay local. They are per-person, with a name, a caste and
+# a village, and republishing them outside the portal that hosts them is a
+# different act from publishing the scraper.
+raw/
+logs/
+
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
