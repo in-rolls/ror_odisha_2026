@@ -129,9 +129,7 @@ def walk_tahsil(
             scoped[RI] = ri_code
             session.postback(RI, scoped)
         found = session.options(VILLAGE)
-        logger.info(
-            "      %s / %s: %d villages", tahsil[1], ri_name or "-", len(found)
-        )
+        logger.info("      %s / %s: %d villages", tahsil[1], ri_name or "-", len(found))
         for village_code, village_name in found:
             row = {
                 "district_code": district[0],
@@ -241,9 +239,7 @@ def assemble() -> None:
     tahsils = villages.groupby(["district_code", "tahsil_code"], observed=True).ngroups
     # RI codes repeat across tahsils, so the circle is only unique within
     # (district, tahsil).
-    circles = villages.groupby(
-        ["district_code", "tahsil_code", "ri_code"], observed=True
-    ).ngroups
+    circles = villages.groupby(["district_code", "tahsil_code", "ri_code"], observed=True).ngroups
     print(f"\n{len(villages):,} villages")
     print(f"  districts   {districts:>6} / {EXPECTED['districts']}")
     print(f"  tahsils     {tahsils:>6} / {EXPECTED['tahsils']}")
@@ -251,9 +247,7 @@ def assemble() -> None:
     print(f"  villages    {len(villages):>6} / {EXPECTED['villages']}")
     print(f"\nwrote {FRAME}")
 
-    duplicates = villages.duplicated(
-        ["district_code", "tahsil_code", "village_code"]
-    ).sum()
+    duplicates = villages.duplicated(["district_code", "tahsil_code", "village_code"]).sum()
     assert duplicates == 0, f"{duplicates:,} duplicate villages in the frame"
 
     if districts == EXPECTED["districts"]:

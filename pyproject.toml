@@ -1,0 +1,31 @@
+[project]
+name = "odisha-ror"
+version = "0.1.0"
+description = "Odisha Record-of-Rights land records: tenant name, father, caste and residence"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Gaurav Sood" }]
+keywords = ["odisha", "land-records", "bhulekh", "caste", "india", "scraper"]
+dependencies = [
+  "certifi>=2024.2",
+  "pandas>=2.2",
+  "pyarrow>=15",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "black>=24", "isort>=5", "flake8>=7"]
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["bhulekh", "list_locations", "fetch_ror", "parse_ror"]
+
+[tool.black]
+line-length = 100
+
+[tool.isort]
+profile = "black"
+line_length = 100

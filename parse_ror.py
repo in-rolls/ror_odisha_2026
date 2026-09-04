@@ -12,8 +12,8 @@ columns:
 Splitting scans for the markers rather than matching one whole-cell regex.
 A single regex has to describe every shape the cell can take, and the shapes
 observed already include a husband (``ସ୍ଵା:``) where the father belongs, a
-comma-suffixed alias inside the name, a parenthesised gloss inside the caste
-(``କୈବର୍ତ୍ତ (ମାଛଧରା)``), and a missing residence. A whole-cell regex drops
+comma-separated list of co-tenants in the name slot, a parenthesised gloss
+inside the caste (``କୈବର୍ତ୍ତ (ମାଛଧରା)``), and a missing residence. A whole-cell regex drops
 every row it does not fully describe, silently and selectively -- which is how
 the Kerala parser lost 39% of its rows, a Christian-heavy slice, to a rule
 about marks digits.
@@ -28,7 +28,6 @@ import argparse
 import gzip
 import json
 import re
-import sys
 import unicodedata
 import zlib
 from collections import Counter
@@ -94,9 +93,7 @@ def clean(value: str) -> str:
     return " ".join(unicodedata.normalize("NFC", value).split()).strip(" ,;.")
 
 
-RELATION = re.compile(
-    BOUNDARY + f"(?:{re.escape(FATHER)}|{re.escape(HUSBAND)})" + SEPARATOR
-)
+RELATION = re.compile(BOUNDARY + f"(?:{re.escape(FATHER)}|{re.escape(HUSBAND)})" + SEPARATOR)
 
 
 def split_cell(cell: str) -> list[dict[str, str]]:
@@ -164,9 +161,7 @@ def caste_groups(cell: str) -> list[tuple[str, str, str]]:
             rest = tail[residence_hit.end() :]
             stop = rest.find(",")
             residence = rest if stop < 0 else rest[:stop]
-            head_start = offset + residence_hit.end() + (
-                len(rest) if stop < 0 else stop + 1
-            )
+            head_start = offset + residence_hit.end() + (len(rest) if stop < 0 else stop + 1)
         elif comma >= 0:
             caste, residence = tail[:comma], ""
             head_start = offset + comma + 1
@@ -190,17 +185,8 @@ def _people_in(head: str, caste: str, residence: str) -> list[dict[str, str]]:
     """
     markers = list(RELATION.finditer(head))
     if not markers:
-        # No father or husband recorded; the whole head is the name.
-        name = clean(head)
-        return [
-            {
-                "name": name,
-                "relation": "",
-                "relative_name": "",
-                "caste": caste,
-                "residence": residence,
-            }
-        ]
+        # No father or husband recorded; the whole head names the parties.
+        return _named(head, "", "", caste, residence)
 
     segments = []
     previous_end = 0
@@ -215,24 +201,53 @@ def _people_in(head: str, caste: str, residence: str) -> list[dict[str, str]]:
         relation = "husband" if HUSBAND in markers[index - 1].group(0) else "father"
         if index < len(markers):
             # This segment ends the previous person and begins the next one.
-            left, _, right = segment.rpartition(",")
-            relative, following = (
-                (clean(left), clean(right)) if left else (clean(segment), "")
-            )
+            # The boundary is the FIRST comma, not the last: a person has
+            # exactly one father or husband, so everything after the first
+            # comma names the next party. Splitting on the last comma put
+            # those names in the relative field instead, which claimed 8.7%
+            # of tenants had between two and nine fathers and dropped every
+            # swallowed name from the table.
+            left, found, right = segment.partition(",")
+            relative, following = (clean(left), clean(right)) if found else (clean(segment), "")
         else:
             relative, following = clean(segment), ""
-        if pending:
-            people.append(
-                {
-                    "name": pending,
-                    "relation": relation,
-                    "relative_name": relative,
-                    "caste": caste,
-                    "residence": residence,
-                }
-            )
+        people.extend(_named(pending, relation, relative, caste, residence))
         pending = following
     return people
+
+
+def _named(names: str, relation: str, relative: str, caste: str, residence: str) -> list[dict]:
+    """Split a comma-separated name slot into one row per person.
+
+    Co-tenants who share a father, caste and residence are printed as one
+    comma-separated run -- "ଲବ ବିଶୋଇ, ବେଡ଼ା ବିଶୋଇ ପି: ଦୁଃଖୁବି ବିଶୋଇ" is two
+    brothers, not one person. An alias is written with an explicit marker
+    (``ଓରଫ``, 524 occurrences in 1.5M records) and never with a comma, and
+    69% of the comma elements occur elsewhere in the corpus as a tenant in
+    their own right, so the comma separates people.
+
+    Args:
+        names: The name slot, possibly listing several people.
+        relation: Whether the relative is a father or a husband.
+        relative: The shared father or husband.
+        caste: The shared caste.
+        residence: The shared residence.
+
+    Returns:
+        One dict per person named.
+    """
+    return [
+        {
+            "name": name,
+            "relation": relation,
+            "relative_name": relative,
+            "caste": caste,
+            "residence": residence,
+        }
+        # Clerks write ",," and trailing commas; those elements name nobody.
+        for name in (clean(part) for part in names.split(","))
+        if name
+    ]
 
 
 def read_checkpoints(root: Path) -> list[dict]:
@@ -286,6 +301,12 @@ SCHEMA = pa.schema(
         ("village_code", pa.dictionary(pa.int32(), pa.string())),
         ("village_name", pa.dictionary(pa.int32(), pa.string())),
         ("khatiyan", pa.string()),
+        # The printed khatiyan number is not unique. Daringbadi village 71
+        # lists two distinct khatiyans both labelled "368/658", holding
+        # different tenants; the site's own option values differ only by an
+        # embedded tab. That raw value is the real identity, so it is kept
+        # verbatim -- any normalisation recreates the collision.
+        ("khatiyan_value", pa.string()),
         ("tenant_seq", pa.int16()),
         # High cardinality: dictionary encoding costs more than it saves.
         ("name_or", pa.string()),
@@ -338,6 +359,7 @@ def build(records: list[dict]) -> pd.DataFrame:
                         "village_code": record["village_code"],
                         "village_name": record["village_name"],
                         "khatiyan": record["khatiyan"],
+                        "khatiyan_value": record["khatiyan_value"],
                         "tenant_seq": seq,
                         "name_or": parts["name"],
                         "relation": parts["relation"],
@@ -354,12 +376,12 @@ def build(records: list[dict]) -> pd.DataFrame:
     # Caste is the label; a row without one cannot be used downstream.
     # Mutation orders quote the blank form and then narrate in prose, so a
     # handful of "castes" are empty or a sentence long. Both are unusable.
-    unusable = frame["caste_or"].eq("") | (
-        frame["caste_or"].str.len() > MAX_CASTE
-    )
+    unusable = frame["caste_or"].eq("") | (frame["caste_or"].str.len() > MAX_CASTE)
     logger_counts["dropped_no_caste"] += int(unusable.sum())
     frame = frame[~unusable].reset_index(drop=True)
-    frame["fetched_at"] = pd.to_datetime(frame["fetched_at"], utc=True)
+    # isoformat() omits ".%f" when microseconds are exactly zero, so the
+    # column carries two shapes and pandas' inferred format breaks on one.
+    frame["fetched_at"] = pd.to_datetime(frame["fetched_at"], format="ISO8601", utc=True)
     frame["tenant_seq"] = frame["tenant_seq"].astype("int16")
     return frame
 
@@ -373,18 +395,34 @@ def check(frame: pd.DataFrame) -> None:
     Raises:
         AssertionError: If an invariant fails.
     """
-    keys = ["district_code", "tahsil_code", "village_code", "khatiyan", "tenant_seq"]
+    keys = [
+        "district_code",
+        "tahsil_code",
+        "village_code",
+        "khatiyan_value",
+        "tenant_seq",
+    ]
     duplicates = int(frame.duplicated(keys).sum())
     assert duplicates == 0, f"{duplicates:,} duplicate tenant rows"
+
+    # A person has one father or husband, so a comma in the relative field
+    # means the split ran past the boundary and swallowed the next party's
+    # names -- deleting them as tenants. Splitting on the last comma instead
+    # of the first put 8.7% of rows here; a handful survive on cells whose
+    # punctuation defeats any boundary rule.
+    shared = int(frame["relative_name_or"].str.contains(",", na=False).sum())
+    share = shared / max(len(frame), 1)
+    assert share < 0.01, (
+        f"{shared:,} of {len(frame):,} rows name more than one father "
+        f"({share:.2%}); the relation split is swallowing names"
+    )
 
     # A row with no caste carries no label and is dropped upstream. Mutation
     # orders quote the blank form -- "ନା: ଜା: ବା:" with nothing filled -- so a
     # few are expected; a flood means the caste split has stopped working.
     blank = int(frame["caste_or"].eq("").sum())
     share = blank / max(len(frame), 1)
-    assert share < 0.005, (
-        f"{blank:,} of {len(frame):,} rows carry no caste ({share:.2%})"
-    )
+    assert share < 0.005, f"{blank:,} of {len(frame):,} rows carry no caste ({share:.2%})"
 
     dropped = logger_counts["dropped_no_caste"]
     share = dropped / max(len(frame) + dropped, 1)
@@ -405,7 +443,8 @@ def check(frame: pd.DataFrame) -> None:
     # do not, the caste marker has stopped matching and the run is silently
     # collecting nothing.
     produced = frame.groupby(
-        ["district_code", "tahsil_code", "village_code", "khatiyan"], observed=True
+        ["district_code", "tahsil_code", "village_code", "khatiyan_value"],
+        observed=True,
     ).ngroups
     if logger_counts["khatiyan_ok"]:
         yield_rate = produced / logger_counts["khatiyan_ok"]

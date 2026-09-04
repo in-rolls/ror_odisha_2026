@@ -192,12 +192,8 @@ class Session:
                 # were recorded as permanently absent when they were merely
                 # throttled.
                 if error.code == THROTTLE_STATUS:
-                    retry_after = (
-                        error.headers.get("Retry-After") if error.headers else None
-                    )
-                    wait = THROTTLE_BACKOFF[
-                        min(attempt - 1, len(THROTTLE_BACKOFF) - 1)
-                    ]
+                    retry_after = error.headers.get("Retry-After") if error.headers else None
+                    wait = THROTTLE_BACKOFF[min(attempt - 1, len(THROTTLE_BACKOFF) - 1)]
                     if retry_after and str(retry_after).isdigit():
                         wait = max(wait, int(retry_after))
                     logger.warning("throttled by the portal; waiting %ds", wait)

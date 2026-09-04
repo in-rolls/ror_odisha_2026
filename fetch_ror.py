@@ -35,6 +35,7 @@ import sys
 import threading
 import time
 import unicodedata
+import zlib
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
@@ -77,12 +78,7 @@ def norm(value: str) -> str:
     Returns:
         NFC-normalised text with zero-width joiners and padding removed.
     """
-    return (
-        unicodedata.normalize("NFC", value)
-        .replace("‌", "")
-        .replace("‍", "")
-        .strip()
-    )
+    return unicodedata.normalize("NFC", value).replace("‌", "").replace("‍", "").strip()
 
 
 class Cells(HTMLParser):
@@ -109,7 +105,7 @@ class Cells(HTMLParser):
 
 # The tenant cell always carries a caste marker. Matching on that rather than
 # on a full name/father/caste/residence shape keeps the rows whose father is
-# recorded as a husband, whose name carries a comma-suffixed alias, or whose
+# recorded as a husband, whose name slot lists several co-tenants, or whose
 # residence is missing -- all of which occur and all of which are wanted.
 CASTE_MARKER = "ଜା"
 
@@ -175,9 +171,21 @@ def done_khatiyans(path: Path) -> set[str]:
     if not path.is_file():
         return set()
     done: set[str] = set()
+    # A checkpoint truncated by a killed worker raises zlib.error, which is
+    # neither OSError nor EOFError. Letting it escape aborted the whole
+    # village instead of resuming it, so a crash during a write cost every
+    # khatiyan in that village rather than the one being written. Read what
+    # is readable and treat the rest as not yet fetched.
     try:
         with gzip.open(path, "rt", encoding="utf8") as handle:
-            for line in handle:
+            while True:
+                try:
+                    line = handle.readline()
+                except (OSError, EOFError, zlib.error) as error:
+                    logger.warning("truncated checkpoint %s: %s", path.name, error)
+                    break
+                if not line:
+                    break
                 try:
                     row = json.loads(line)
                 except json.JSONDecodeError:
@@ -185,9 +193,61 @@ def done_khatiyans(path: Path) -> set[str]:
                     continue
                 if row.get("ok"):
                     done.add(row["khatiyan"])
-    except (OSError, EOFError) as error:
+    except (OSError, EOFError, zlib.error) as error:
         logger.warning("unreadable checkpoint %s: %s", path.name, error)
     return done
+
+
+def salvage(path: Path) -> int:
+    """Rewrite a truncated checkpoint from the records still readable.
+
+    Appending to a corrupt gzip produces a second member that the reader can
+    never reach, because it stops at the corruption in the first. Rewriting
+    the file from what survives makes later appends readable again.
+
+    Args:
+        path: The village checkpoint.
+
+    Returns:
+        How many records survived.
+    """
+    rows: list[str] = []
+    try:
+        with gzip.open(path, "rt", encoding="utf8") as handle:
+            while True:
+                try:
+                    line = handle.readline()
+                except (OSError, EOFError, zlib.error):
+                    break
+                if not line:
+                    break
+                if line.strip():
+                    rows.append(line if line.endswith("\n") else line + "\n")
+    except (OSError, EOFError, zlib.error):
+        pass
+    with gzip.open(path, "wt", encoding="utf8") as handle:
+        handle.writelines(rows)
+    return len(rows)
+
+
+def is_readable(path: Path) -> bool:
+    """Return whether a checkpoint can be read end to end.
+
+    Args:
+        path: The village checkpoint.
+
+    Returns:
+        True when the file is absent or fully readable.
+    """
+    if not path.is_file():
+        return True
+    try:
+        with gzip.open(path, "rb") as handle:
+            while handle.read(65536):
+                pass
+    except (OSError, EOFError, zlib.error):
+        return False
+    return True
 
 
 def cascade(session: Session, village: dict) -> dict[str, str]:
@@ -247,9 +307,7 @@ class Runner:
         log_lock: Guards the structured log file.
     """
 
-    def __init__(
-        self, pause: float, per_village: int, log_path: Path, counters: dict
-    ) -> None:
+    def __init__(self, pause: float, per_village: int, log_path: Path, counters: dict) -> None:
         self.pause = pause
         self.per_village = per_village
         self.log_path = log_path
@@ -284,16 +342,17 @@ class Runner:
         Args:
             row: One row of the village frame.
         """
-        path = village_path(
-            row["district_code"], row["tahsil_code"], row["village_code"]
-        )
+        path = village_path(row["district_code"], row["tahsil_code"], row["village_code"])
         path.parent.mkdir(parents=True, exist_ok=True)
+        if not is_readable(path):
+            kept = salvage(path)
+            logger.warning("salvaged %s: %d records kept", path.name, kept)
         already = done_khatiyans(path)
 
         try:
             session = Session(pause=self.pause)
             session.open()
-            fields = cascade(session, row)
+            cascade(session, row)
             khatiyans = session.options(BIND)
         except PortalError as error:
             logger.warning("village %s listing failed: %s", row["village_name"], error)
@@ -309,11 +368,9 @@ class Runner:
             self.bump("village_failed")
             return
 
-        wanted = [
-            (value, label)
-            for value, label in khatiyans
-            if label not in already
-        ][: self.per_village]
+        wanted = [(value, label) for value, label in khatiyans if label not in already][
+            : self.per_village
+        ]
         self.record(
             {
                 "event": "village_start",
@@ -367,18 +424,25 @@ class Runner:
                 handle.flush()
                 self.bump("ok" if cells else "failed")
                 self.bump("cells", len(cells))
-                self.record(
-                    {
-                        "event": "khatiyan",
-                        "village": row["village_name"],
-                        "village_code": row["village_code"],
-                        "khatiyan": label,
-                        "ok": bool(cells),
-                        "n_cells": len(cells),
-                        "elapsed_ms": elapsed,
-                        "error": error,
-                    }
-                )
+                if not cells:
+                    # Only failures are logged per khatiyan. Logging successes
+                    # too put 123 MB in one file for 620k records, and would
+                    # reach roughly 4 GB across the full 20.4M -- thirty times
+                    # the size of the data it describes. A success is already
+                    # counted in the progress line and written to the
+                    # checkpoint; the failure histogram is what has diagnostic
+                    # value, and that is what this keeps.
+                    self.record(
+                        {
+                            "event": "khatiyan_failed",
+                            "village": row["village_name"],
+                            "village_code": row["village_code"],
+                            "tahsil_code": row["tahsil_code"],
+                            "khatiyan": label,
+                            "elapsed_ms": elapsed,
+                            "error": error,
+                        }
+                    )
 
 
 def order_villages(frame: pd.DataFrame, wanted: list[str]) -> pd.DataFrame:
@@ -397,9 +461,11 @@ def order_villages(frame: pd.DataFrame, wanted: list[str]) -> pd.DataFrame:
         rank[names.eq(norm(district))] = position
     # Interleave villages within a district so an interrupted run still has
     # breadth across tahsils rather than a single tahsil crawled to death.
-    return frame.assign(_rank=rank).sort_values(
-        ["_rank", "tahsil_code", "village_code"]
-    ).drop(columns="_rank")
+    return (
+        frame.assign(_rank=rank)
+        .sort_values(["_rank", "tahsil_code", "village_code"])
+        .drop(columns="_rank")
+    )
 
 
 def main() -> None:
