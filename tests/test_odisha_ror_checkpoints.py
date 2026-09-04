@@ -10,9 +10,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = (
-    Path(__file__).resolve().parent.parent / "parse_ror.py"
-)
+SCRIPT = Path(__file__).resolve().parent.parent / "parse_ror.py"
 
 
 def _module():
