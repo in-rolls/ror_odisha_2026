@@ -97,6 +97,7 @@ class FormParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.hidden: dict[str, str] = {}
         self.selects: dict[str, list[tuple[str, str]]] = {}
+        self.selected: dict[str, str] = {}
         self._select: str | None = None
         self._value: str | None = None
         self._label: list[str] = []
@@ -117,6 +118,8 @@ class FormParser(HTMLParser):
         elif tag == "option" and self._select is not None:
             self._value = got.get("value", "")
             self._label = []
+            if "selected" in got:
+                self.selected[self._select] = self._value
 
     def handle_data(self, data: str) -> None:
         """Accumulate the text of the option being read.
@@ -175,6 +178,10 @@ class Session:
         self._absorb(self._fetch(ROOT, None))
 
     def _fetch(self, url: str, data: bytes | None) -> str:
+        return self.fetch_bytes(url, data).decode("utf8", "replace")
+
+    def fetch_bytes(self, url: str, data: bytes | None = None) -> bytes:
+        """Fetch a binary response with the same cookies, TLS and retry policy."""
         last: Exception | None = None
         for attempt in range(1, self.attempts + 1):
             try:
@@ -183,7 +190,7 @@ class Session:
                     if response.headers.get("Content-Encoding") == "gzip":
                         body = gzip.decompress(body)
                 time.sleep(self.pause)
-                return body.decode("utf8", "replace")
+                return body
             except urllib.error.HTTPError as error:
                 last = error
                 # A rate limit is not a transport failure and must not be
@@ -252,11 +259,15 @@ class Session:
         Returns:
             The response body.
         """
+        return self.submit_bytes(fields, button, label).decode("utf8", "replace")
+
+    def submit_bytes(self, fields: dict[str, str], button: str, label: str) -> bytes:
+        """Submit a form without decoding a possible PDF response as HTML."""
         payload = dict(fields)
         payload["__EVENTTARGET"] = ""
         payload["__EVENTARGUMENT"] = ""
         payload[button] = label
-        return self._fetch(ROR_VIEW, self._payload(payload))
+        return self.fetch_bytes(ROR_VIEW, self._payload(payload))
 
     def options(self, name: str) -> list[tuple[str, str]]:
         """Return ``(value, label)`` for one dropdown, minus its prompt row.

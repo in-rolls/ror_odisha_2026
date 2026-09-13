@@ -1,6 +1,6 @@
 # The crawl output is large and re-derivable: every khatiyan checkpoint can be
 # refetched, and the parsed table is rebuilt by parse_ror.py.
-raw/
+/raw
 
 # Crawl telemetry. Only failures are recorded, but a full-state run still
 # produces tens of MB and none of it is worth versioning.

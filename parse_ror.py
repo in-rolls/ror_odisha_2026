@@ -52,7 +52,13 @@ RESIDENCE = "ବା"
 # ``ମୌଜା :`` -- "Mauja", the village line printed above and below every
 # tenant row -- and two thirds of the captured cells are village names.
 BOUNDARY = r"(?:^|(?<=[\s,;।]))"
-SEPARATOR = r"\s*[:：]\s*"
+SEPARATOR = r"\s*[:：\-]\s*"
+MARKER_LABELS = {
+    FATHER: ("ପିତା", FATHER),
+    HUSBAND: ("ସ୍ଵାମୀ", "ସ୍ବାମୀ", HUSBAND),
+    CASTE: ("ଜାତି", CASTE),
+    RESIDENCE: ("ବାସସ୍ଥାନ", RESIDENCE),
+}
 
 # A caste value longer than this is a runaway match that has swallowed the
 # residence or the next tenant, not a real caste.
@@ -70,7 +76,19 @@ def marker(label: str) -> re.Pattern:
     Returns:
         A compiled pattern for the marker and its separator.
     """
-    return re.compile(BOUNDARY + re.escape(label) + SEPARATOR)
+    labels = "|".join(re.escape(value) for value in MARKER_LABELS.get(label, (label,)))
+    if label in (FATHER, HUSBAND):
+        full_labels = "|".join(re.escape(value) for value in MARKER_LABELS[label][:-1])
+        return re.compile(
+            BOUNDARY
+            + f"(?:{full_labels})"
+            + SEPARATOR
+            + "|"
+            + BOUNDARY
+            + re.escape(label)
+            + r"\s*[:：]\s*"
+        )
+    return re.compile(BOUNDARY + f"(?:{labels})" + SEPARATOR)
 
 
 PATTERNS = {
@@ -93,10 +111,10 @@ def clean(value: str) -> str:
     return " ".join(unicodedata.normalize("NFC", value).split()).strip(" ,;.")
 
 
-RELATION = re.compile(BOUNDARY + f"(?:{re.escape(FATHER)}|{re.escape(HUSBAND)})" + SEPARATOR)
+RELATION = re.compile(PATTERNS["father"].pattern + "|" + PATTERNS["husband"].pattern)
 
 
-def split_cell(cell: str) -> list[dict[str, str]]:
+def split_cell(cell: str, *, owner_block: bool = False) -> list[dict[str, str]]:
     """Split one tenant cell into one row per person named on it.
 
     A cell can carry several tenants who share a caste and residence:
@@ -110,10 +128,16 @@ def split_cell(cell: str) -> list[dict[str, str]]:
 
     Args:
         cell: The cell text as fetched.
+        owner_block: True for an explicit HTML owner span or PDF owner table.
 
     Returns:
-        One dict per person, or an empty list if the cell carries no caste.
+        One dict per named owner entry; empty when no name can be identified.
     """
+    if owner_block and not PATTERNS["caste"].search(cell):
+        residence = PATTERNS["residence"].search(cell)
+        head = cell[: residence.start()] if residence else cell
+        tail = clean(cell[residence.end() :]) if residence else ""
+        return _people_in(head, "", tail)
     people: list[dict[str, str]] = []
     for head, caste, residence in caste_groups(cell):
         people.extend(_people_in(head, caste, residence))
@@ -198,7 +222,9 @@ def _people_in(head: str, caste: str, residence: str) -> list[dict[str, str]]:
     people: list[dict[str, str]] = []
     pending = clean(segments[0])
     for index, segment in enumerate(segments[1:], start=1):
-        relation = "husband" if HUSBAND in markers[index - 1].group(0) else "father"
+        relation = (
+            "husband" if PATTERNS["husband"].fullmatch(markers[index - 1].group(0)) else "father"
+        )
         if index < len(markers):
             # This segment ends the previous person and begins the next one.
             # The boundary is the FIRST comma, not the last: a person has
@@ -337,7 +363,13 @@ def build(records: list[dict]) -> pd.DataFrame:
         logger_counts["khatiyan_ok"] += 1
         seq = 0
         for cell in record.get("cells", []):
-            people = split_cell(cell)
+            people = split_cell(
+                cell,
+                owner_block=(
+                    record.get("source", {}).get("format") == "pdf"
+                    or record.get("source", {}).get("owner_spans", False)
+                ),
+            )
             if not people:
                 # Most of these are the village line printed above and below
                 # the tenant rows, not a failed parse.
@@ -373,12 +405,8 @@ def build(records: list[dict]) -> pd.DataFrame:
     frame = pd.DataFrame(rows)
     if frame.empty:
         return frame
-    # Caste is the label; a row without one cannot be used downstream.
-    # Mutation orders quote the blank form and then narrate in prose, so a
-    # handful of "castes" are empty or a sentence long. Both are unusable.
-    unusable = frame["caste_or"].eq("") | (frame["caste_or"].str.len() > MAX_CASTE)
-    logger_counts["dropped_no_caste"] += int(unusable.sum())
-    frame = frame[~unusable].reset_index(drop=True)
+    unusual = frame["caste_or"].eq("") | (frame["caste_or"].str.len() > MAX_CASTE)
+    logger_counts["missing_or_long_caste"] += int(unusual.sum())
     # isoformat() omits ".%f" when microseconds are exactly zero, so the
     # column carries two shapes and pandas' inferred format breaks on one.
     frame["fetched_at"] = pd.to_datetime(frame["fetched_at"], format="ISO8601", utc=True)
@@ -416,42 +444,6 @@ def check(frame: pd.DataFrame) -> None:
         f"{shared:,} of {len(frame):,} rows name more than one father "
         f"({share:.2%}); the relation split is swallowing names"
     )
-
-    # A row with no caste carries no label and is dropped upstream. Mutation
-    # orders quote the blank form -- "ନା: ଜା: ବା:" with nothing filled -- so a
-    # few are expected; a flood means the caste split has stopped working.
-    blank = int(frame["caste_or"].eq("").sum())
-    share = blank / max(len(frame), 1)
-    assert share < 0.005, f"{blank:,} of {len(frame):,} rows carry no caste ({share:.2%})"
-
-    dropped = logger_counts["dropped_no_caste"]
-    share = dropped / max(len(frame) + dropped, 1)
-    assert share < 0.005, (
-        f"{dropped:,} rows had an empty or sentence-long caste "
-        f"({share:.2%}); the caste split is running away"
-    )
-
-    unparsed = logger_counts["cell_unparsed"]
-    total_cells = unparsed + len(frame)
-    share = unparsed / total_cells if total_cells else 0
-    assert share < 0.15, (
-        f"{share:.1%} of tenant cells did not parse "
-        f"({unparsed:,} of {total_cells:,}); the cell format has drifted"
-    )
-
-    # Every khatiyan that fetched successfully should yield a tenant. If most
-    # do not, the caste marker has stopped matching and the run is silently
-    # collecting nothing.
-    produced = frame.groupby(
-        ["district_code", "tahsil_code", "village_code", "khatiyan_value"],
-        observed=True,
-    ).ngroups
-    if logger_counts["khatiyan_ok"]:
-        yield_rate = produced / logger_counts["khatiyan_ok"]
-        assert yield_rate > 0.85, (
-            f"only {yield_rate:.1%} of fetched khatiyans yielded a tenant "
-            f"({produced:,} of {logger_counts['khatiyan_ok']:,})"
-        )
 
 
 def main() -> None:

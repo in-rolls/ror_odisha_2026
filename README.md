@@ -94,3 +94,96 @@ the Christian-heavy ones. Output lands in `raw/`, which is not committed.
 place columns dictionary-encoded and `raw_cell` kept for audit. Names and
 castes are Odia script; the portal has no English rendering, so romanisation
 is a separate step and deliberately not done here.
+
+## Unattended crawl and monitoring on macOS
+
+```bash
+uv sync --extra dev --group crawl
+mkdir -p logs
+.venv/bin/supervisord -c supervisord.conf
+.venv/bin/supervisorctl -c supervisord.conf status
+```
+
+Supervisor runs the existing 256-worker, full-village crawl under `caffeinate`.
+Unsuccessful passes return a nonzero status and retry after five minutes;
+crashed jobs restart automatically. An exclusive lock prevents overlapping
+checkpoint writers. Successful cached khatiyans are reused, and truncated
+checkpoints are rewritten atomically from valid readable records.
+
+`crawl_health.py` audits every 30 minutes, caches unchanged file summaries, and
+writes `logs/crawl-health.json` plus `logs/crawl-health-history.jsonl`. It checks
+composite village keys, duplicate successes, malformed payloads, truncated tails,
+progress and disk space. Census parsing checks cover every saved successful record
+and every cell. Saved cell counts include village-header matches and must not be
+reported as tenant counts. Completion sidecars record enumerated khatiyans,
+saved records, and remaining work using exact, untrimmed option values. Printed
+labels can collide. Older status files based on labels must be revalidated;
+villages without current completion evidence have
+unknown completion status. Villages with records are not necessarily complete.
+
+`raw/repair-villages.json`, when present, puts those composite village keys first
+on restart. Originals from the September 2026 cleanup are preserved under
+`raw/checkpoint-backups/`.
+
+Use `.venv/bin/supervisorctl -c supervisord.conf stop crawl` to pause,
+`start crawl` to resume, or `shutdown` to stop both jobs and Supervisor.
+The supervisor continues after the terminal closes, but must be started again
+after a reboot or logout. A separate four-hour scheduler in the neighboring
+`rajasthan-ror` project queues a combined anomaly review into the existing Codex
+chat. Keep Codex available for those reviews.
+
+
+### External storage on this workstation
+
+The local `raw` path links to `/Volumes/Staging/land-records/odisha-ror/raw`.
+Raw checkpoints, retained PDFs and all repair backups reside there. Keep Staging
+mounted while crawling or auditing; stop both Supervisor jobs before ejecting it.
+Code, `.venv`, logs and Supervisor configuration stay in this checkout. Audit
+reports distinguish checkout disk space (`free_disk_gb`) from data-volume space
+(`data_free_disk_gb`). The September 12 migration verified every file with SHA-256;
+its receipts are under `/Volumes/Staging/land-records/`.
+
+### PDF RoRs and census coverage
+
+The supervised crawl has no per-village record cap. It covers the entire village
+frame; `--districts` changes priority, not which districts are included. Reports
+separate a census of saved data from completion of the statewide crawl.
+
+Some settlement RoRs open `HRoRView.aspx?Param=1` as a PDF. The fetcher follows
+that popup in the same session and retains original PDF bytes under `raw/pdf/`.
+It reconstructs missing Unicode maps from the embedded Kalinga 6 fonts and their
+substitution tables, restores Odia character order, and reads every table page.
+The printed village and khatiyan must match the request. Repeated owner blocks
+across pages are counted once. Unknown fonts, unresolved glyphs, incomplete
+PDFs, and identity mismatches remain failures. Retained PDFs can be reprocessed
+without downloading them again; they are never silently overwritten.
+
+Each PDF checkpoint includes its raw path, SHA-256 checksum, page count,
+extractor version and printed identity. Census audits check these references
+and all extracted cells. A blank caste does not delete an otherwise parsed
+owner. An unchanged checkpoint may reuse its complete census summary; changed
+checkpoints and changed referenced PDFs are checked again.
+
+
+The PDF decoder also reads embedded Arial text and recognizes pages containing
+only the exact certification footer. Undefined source glyphs and missing owner
+tables remain unresolved. A village spelling exception is accepted only from
+`raw/pdf-village-aliases.json`, with evidence from independent records; the
+complete selected code path and khatiyan checks remain active. Census reports
+flag saved records that yield no parsed owners, since capture alone does not
+establish complete owner extraction.
+
+
+HTML capture uses the portal's explicit owner, village and khatiyan spans rather
+than searching for a caste marker. This retains owner-field text even when caste
+is blank, including institutions and land-status descriptions. Parsed owner
+entries are not necessarily people. Legacy checkpoints containing only village
+headers are marked incomplete, preserved, and queued for refetch; that correction
+reduces the valid-capture count without deleting the recorded responses.
+
+Legacy boundary descriptions containing the village marker are also excluded
+from completion and requeued after preserving the original captures. The owner
+parser recognizes full Odia labels for father, husband, caste and residence,
+including colon and hyphen separators. Ambiguous abbreviated periods are not
+treated as field markers, preserving names with initials. Blank name slots remain visible
+in the census as records with no named owner entry.

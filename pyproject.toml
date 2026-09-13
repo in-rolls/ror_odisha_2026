@@ -9,21 +9,28 @@ authors = [{ name = "Gaurav Sood" }]
 keywords = ["odisha", "land-records", "bhulekh", "caste", "india", "scraper"]
 dependencies = [
   "certifi>=2024.2",
+  "fonttools>=4.65",
   "pandas>=2.2",
+  "pdfplumber>=0.11.10",
   "pyarrow>=15",
+  "pypdf>=6.18.1",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "black>=24", "isort>=5", "flake8>=7"]
+
+[dependency-groups]
+crawl = ["supervisor>=4.3"]
 
 [build-system]
 requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-py-modules = ["bhulekh", "list_locations", "fetch_ror", "parse_ror"]
+py-modules = ["bhulekh", "list_locations", "fetch_ror", "parse_ror", "pdf_ror"]
 
 [tool.black]
+target-version = ["py311"]
 line-length = 100
 
 [tool.isort]
