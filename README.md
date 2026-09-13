@@ -1,4 +1,4 @@
-# Odisha Record of Rights
+# Odisha Record of Rights 2026
 
 Tenant name, father's name, **caste** and residence, scraped from the Odisha
 land-records portal at <https://bhulekh.ori.nic.in>. Built to give a
