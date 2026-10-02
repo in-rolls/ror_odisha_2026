@@ -129,7 +129,7 @@ Use `.venv/bin/supervisorctl -c supervisord.conf stop crawl` to pause,
 `start crawl` to resume, or `shutdown` to stop both jobs and Supervisor.
 The supervisor continues after the terminal closes, but must be started again
 after a reboot or logout. A separate four-hour scheduler in the neighboring
-`rajasthan-ror` project queues a combined anomaly review into the existing Codex
+`ror_raj_2026` project queues a combined anomaly review into the existing Codex
 chat. Keep Codex available for those reviews.
 
 

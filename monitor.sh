@@ -10,7 +10,7 @@
 # Alerts go to a desktop notification and to logs/monitor.log. The log is the
 # reliable half -- notifications depend on a logged-in GUI session.
 #
-#   crontab:  0 */2 * * * /Users/you/Documents/GitHub/odisha-ror/monitor.sh
+#   crontab:  0 */2 * * * /Users/you/Documents/GitHub/ror_odisha_2026/monitor.sh
 
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
