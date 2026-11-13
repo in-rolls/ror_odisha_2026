@@ -328,10 +328,10 @@ SCHEMA = pa.schema(
         ("village_name", pa.dictionary(pa.int32(), pa.string())),
         ("khatiyan", pa.string()),
         # The printed khatiyan number is not unique. Daringbadi village 71
-        # lists two distinct khatiyans both labelled "368/658", holding
+        # lists two distinct khatiyans both labeled "368/658", holding
         # different tenants; the site's own option values differ only by an
         # embedded tab. That raw value is the real identity, so it is kept
-        # verbatim -- any normalisation recreates the collision.
+        # verbatim -- any normalization recreates the collision.
         ("khatiyan_value", pa.string()),
         ("tenant_seq", pa.int16()),
         # High cardinality: dictionary encoding costs more than it saves.
